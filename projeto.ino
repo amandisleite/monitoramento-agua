@@ -23,7 +23,7 @@ const int relePin = 23;
 const char* ssid = "SEU_WIFI";
 const char* password = "SUA_SENHA";
 
-// HiveMQ Cloud (Serverless Plan)
+// Broker MQTT Mosquitto
 const char* mqtt_server = "test.mosquitto.org";
 const int mqtt_port = 1883;
 
@@ -57,7 +57,7 @@ void reconnect() {
     String clientId = "ESP32Client-" + String(random(0xffff), HEX);
     if (client.connect(clientId.c_str())) {
       Serial.println("conectado");
-      // Se quiser se inscrever em um tópico:
+      // Se inscreve no tópico
       client.subscribe("controle/valvula");
     } else {
       Serial.print("falhou, rc=");
@@ -73,6 +73,7 @@ void pulseCounter() {
   pulseCount++;
 }
 
+// Liga/desliga o relé e a válvula solenoide
 void callback(char* topic, byte* payload, unsigned int length) {
   String mensagem;
   for (int i = 0; i < length; i++) {
@@ -101,7 +102,7 @@ void setup() {
   
   // Inicializa o sensor de fluxo
   pinMode(sensorPin, INPUT);
-  digitalWrite(sensorPin, HIGH); // Ativa pull-up no pino
+  digitalWrite(sensorPin, HIGH);
   pulseCount = 0;
   
   // Inicializa interrupção para contar pulsos
@@ -170,7 +171,7 @@ void loop() {
     payload += "\"pressure\":" + String(pressureValue, 1);
     payload += "}";
 
-    // Exemplo: publicar uma mensagem
+    // Pblica uma mensagem
     client.publish("fluxoagua/teste", payload.c_str());
   }
 }
