@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Detecção de Vazamento</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; }
+        #status { font-size: 1.5em; margin-top: 10px; }
+        pre { background: #f4f4f4; padding: 10px; border: 1px solid #ccc; }
+        .section { margin-top: 20px; }
+        input, button {
+        padding: 8px;
+        font-size: 1em;
+        margin-right: 10px;
+        }
+        button {
+        cursor: pointer;
+        background: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        }
+        button:hover {
+        background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <h2>Monitoramento de Água</h2>
+
+    <div class="section">
+        <label for="minutosInput"><strong>Duração do baseline:</strong></label>
+        <input type="number" id="minutosInput" value="1" min="0.1" step="0.1"> minutos
+        <button id="iniciarBtn">Iniciar Monitoramento</button>
+    </div>
+
+    <div class="section">
+        <label for="fluxoTol"><strong>Tolerância de fluxo (L/min):</strong></label>
+        <input type="number" id="fluxoTol" value="0.5" step="0.1" min="0">
+    </div>
+    
+    <div class="section">
+        <label for="pressaoTol"><strong>Tolerância de pressão (PSI):</strong></label>
+        <input type="number" id="pressaoTol" value="0.5" step="0.1" min="0">
+    </div>
+
+    <div class="section">
+        <strong>Status:</strong> <span id="status">Aguardando início...</span>
+    </div>
+
+    <div class="section">
+        <button id="fecharBtn">Fechar Válvula</button>
+        <button id="abrirBtn">Abrir Válvula</button>
+    </div>
+
+    <div class="section">
+        <strong>Última leitura:</strong>
+        <pre id="mensagem">---</pre>
+    </div>
+
+    <script src="https://unpkg.com/paho-mqtt@1.1.0/paho-mqtt-min.js"></script>
+    <script>
+        let baselineData = [];
+        let baselineReady = false;
+        let startTime = null;
+        let duracaoAprendizado = 0;
+        let monitoramentoAtivo = false;
+
+        let toleranciaFluxo = 0.5; // ou 1.0, se for um sensor baratinho
+        let toleranciaPressao = 0.5;
+
+        const client = new Paho.Client("test.mosquitto.org", 8081, "webClient-" + Math.random());
+
+        client.connect({
+            useSSL: true,
+            onSuccess: () => {
+                console.log("Conectado ao broker!");
+                client.subscribe("fluxoagua/teste");
+            }
+        });
+
+        document.getElementById("iniciarBtn").addEventListener("click", () => {
+        const minutos = parseFloat(document.getElementById("minutosInput").value);
+
+        toleranciaFluxo = parseFloat(document.getElementById("fluxoTol").value);
+        toleranciaPressao = parseFloat(document.getElementById("pressaoTol").value);
+
+        if (isNaN(minutos) || minutos <= 0) {
+            alert("Por favor, insira um número válido de minutos.");
+            return;
+        }
+    
+        duracaoAprendizado = minutos * 60 * 1000;
+        startTime = Date.now();
+        baselineReady = false;
+        baselineData = [];
+        monitoramentoAtivo = true;
+        localStorage.removeItem("baseline");
+        document.getElementById("status").textContent = "⏳ Monitoramento iniciado...";
+        console.log("⏳ Aprendizado por", minutos, "min | Tol. fluxo:", toleranciaFluxo, "| Tol. pressão:", toleranciaPressao);
+        });
+
+        client.onMessageArrived = function(message) {
+        if (!monitoramentoAtivo) return;
+
+        let data;
+        try {
+            data = JSON.parse(message.payloadString);
+        } catch (e) {
+            console.warn("Erro ao parsear JSON:", e);
+            return;
+        }
+
+        const fluxo = parseFloat(data.flowRate);
+        const pressao = parseFloat(data.pressure);
+        const tempoAgora = Date.now();
+
+        document.getElementById("mensagem").textContent = JSON.stringify(data, null, 2);
+
+        if (isNaN(fluxo) || isNaN(pressao)) {
+            console.warn("❌ Dados inválidos:", fluxo, pressao);
+            return;
+        }
+
+        const historico = JSON.parse(localStorage.getItem("leituras") || "[]");
+        historico.push({ fluxo, pressao, timestamp: tempoAgora });
+        localStorage.setItem("leituras", JSON.stringify(historico));
+
+        const atrasoInicial = 5000; // descarta 5 segundos iniciais pro fluxo de água ficar estável
+
+        if (!baselineReady && tempoAgora - startTime >= atrasoInicial && tempoAgora - startTime < duracaoAprendizado) {
+            baselineData.push({ fluxo, pressao });
+            document.getElementById("status").textContent = "📊 Coletando baseline...";
+            return;
+        }
+
+        if (!baselineReady && baselineData.length > 0) {
+            const soma = baselineData.reduce((acc, item) => {
+                acc.fluxo += item.fluxo;
+                acc.pressao += item.pressao;
+                return acc;
+            }, { fluxo: 0, pressao: 0 });
+
+            const baselineFluxo = soma.fluxo / baselineData.length;
+            const baselinePressao = soma.pressao / baselineData.length;
+
+            if (!isNaN(baselineFluxo) && !isNaN(baselinePressao)) {
+                localStorage.setItem("baseline", JSON.stringify({ baselineFluxo, baselinePressao }));
+                baselineReady = true;
+                console.log("✅ Baseline calculado:", { baselineFluxo, baselinePressao });
+            } else {
+                console.warn("❌ Erro ao calcular baseline.");
+            }
+            return;
+        }
+
+        const baseline = JSON.parse(localStorage.getItem("baseline"));
+        if (!baseline) {
+            console.warn("⚠️ Baseline ausente.");
+            return;
+        }
+
+        if (fluxo <= 0 || pressao <= 0) {
+            document.getElementById("status").textContent = "🚫 Sem fluxo de água.";
+            return;
+        }
+
+        const difFluxo = Math.abs(fluxo - baseline.baselineFluxo);
+        const difPressao = Math.abs(pressao - baseline.baselinePressao);
+
+        if (difFluxo > toleranciaFluxo || difPressao > toleranciaPressao) {
+            document.getElementById("status").textContent = "⚠️ Vazamento detectado!";
+            const comando = new Paho.Message("fechar");
+            comando.destinationName = "controle/valvula";
+            client.send(comando);
+        } else {
+            document.getElementById("status").textContent = "✅ Fluxo normal.";
+        }
+        };
+
+        document.getElementById("fecharBtn").addEventListener("click", function() {
+            const fecharMessage = new Paho.Message("fechar");
+            fecharMessage.destinationName = "controle/valvula";
+            client.send(fecharMessage);
+        });
+
+        document.getElementById("abrirBtn").addEventListener("click", function() {
+            const abrirMessage = new Paho.Message("abrir");
+            abrirMessage.destinationName = "controle/valvula";
+            client.send(abrirMessage);
+        });
+    </script>
+</body>
+</html>
